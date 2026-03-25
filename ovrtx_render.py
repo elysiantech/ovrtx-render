@@ -21,6 +21,7 @@ def _build_wrapper_with_usd_core(url: str, distance_multiplier: float = 3.0, azi
         from pxr import Usd, UsdGeom, UsdRender, UsdLux, Sdf, Gf
 
         src=Usd.Stage.Open('/tmp/input.usdz')
+        up_axis = src.GetMetadata('upAxis') or 'Y'
         root=src.GetDefaultPrim()
         root_path=root.GetPath() if root else Sdf.Path('/Scene')
         cache=UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_, UsdGeom.Tokens.render, UsdGeom.Tokens.proxy])
@@ -43,13 +44,18 @@ def _build_wrapper_with_usd_core(url: str, distance_multiplier: float = 3.0, azi
         az_rad = math.radians(azimuth)
         el_rad = math.radians(elevation)
 
-        # Camera position (spherical coords, Y-up for USD)
-        cam_x = cx + distance * math.cos(el_rad) * math.sin(az_rad)
-        cam_y = cy + distance * math.sin(el_rad)
-        cam_z = cz + distance * math.cos(el_rad) * math.cos(az_rad)
+        # Camera position (spherical coords, respecting source up-axis)
+        if up_axis == 'Z':
+            cam_x = cx + distance * math.cos(el_rad) * math.sin(az_rad)
+            cam_y = cy + distance * math.cos(el_rad) * math.cos(az_rad)
+            cam_z = cz + distance * math.sin(el_rad)
+        else:
+            cam_x = cx + distance * math.cos(el_rad) * math.sin(az_rad)
+            cam_y = cy + distance * math.sin(el_rad)
+            cam_z = cz + distance * math.cos(el_rad) * math.cos(az_rad)
 
         st=Usd.Stage.CreateNew('/tmp/wrapper.usda')
-        st.SetMetadata('upAxis','Y')
+        st.SetMetadata('upAxis', up_axis)
         w=st.DefinePrim('/World','Xform')
         m=st.DefinePrim('/World/Model','Xform')
         m.GetReferences().AddReference('/tmp/input.usdz')
@@ -69,7 +75,7 @@ def _build_wrapper_with_usd_core(url: str, distance_multiplier: float = 3.0, azi
         # Look-at transform
         pos = Gf.Vec3d(cam_x, cam_y, cam_z)
         target = Gf.Vec3d(cx, cy, cz)
-        up = Gf.Vec3d(0, 1, 0)
+        up = Gf.Vec3d(0, 0, 1) if up_axis == 'Z' else Gf.Vec3d(0, 1, 0)
         look=Gf.Matrix4d(1.0)
         look.SetLookAt(pos, target, up)
         cam.AddTransformOp().Set(look.GetInverse())
@@ -95,6 +101,7 @@ def _build_wrapper_with_usd_core(url: str, distance_multiplier: float = 3.0, azi
         print(f'BOUNDS_MIN:{{mn[0]}},{{mn[1]}},{{mn[2]}}')
         print(f'BOUNDS_MAX:{{mx[0]}},{{mx[1]}},{{mx[2]}}')
         print(f'CAMERA_DISTANCE:{{distance}}')
+        print(f'UP_AXIS:{{up_axis}}')
         print('WRAPPER_OK')
     ''')
     with open('/tmp/build_wrapper.py','w') as f:
@@ -122,7 +129,19 @@ def _build_wrapper_with_usd_core(url: str, distance_multiplier: float = 3.0, azi
             meta['bounds_max'] = [float(x) for x in line.split(':')[1].split(',')]
         elif line.startswith('CAMERA_DISTANCE:'):
             meta['camera_distance'] = float(line.split(':')[1])
+        elif line.startswith('UP_AXIS:'):
+            meta['up_axis'] = line.split(':')[1]
     return meta
+
+
+_renderer = None
+
+def get_renderer():
+    global _renderer
+    if _renderer is None:
+        import ovrtx
+        _renderer = ovrtx.Renderer()
+    return _renderer
 
 
 def handler(job):
@@ -147,8 +166,8 @@ def handler(job):
         os.system('pkill Xvfb >/dev/null 2>&1 || true')
         os.system('Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp >/tmp/xvfb.log 2>&1 &')
 
-        import ovrtx
-        r=ovrtx.Renderer()
+        r = get_renderer()
+        r.reset_stage()
         r.add_usd('/tmp/wrapper.usda')
 
         render_product = '/Render/RenderProduct'
@@ -194,6 +213,7 @@ def handler(job):
                 'elevation': elevation,
                 'distance_multiplier': distance_multiplier,
             },
+            'up_axis': meta.get('up_axis', 'Y'),
             'source': url,
         }
     except Exception as e:

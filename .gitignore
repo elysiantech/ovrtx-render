@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+venv/
+.venv/
+
+# Environment
+.env
+
+# OS
+.DS_Store
+
+# Output
+results/
+*.png
